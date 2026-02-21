@@ -137,7 +137,7 @@ In Swift MLX, you must explicitly declare modules and parameters using property 
 class MyModule: Module {
     @ModuleInfo var linear: Linear     // sub-module
     @ParameterInfo var weight: MLXArray // parameter
-    
+
     init() {
         self._linear.wrappedValue = Linear(256, 256)
         self._weight.wrappedValue = MLXArray.ones([256])
@@ -232,7 +232,7 @@ This distinction is crucial:
   ```swift
   // For @ParameterInfo (loaded from weights):
   self._correctOutputScale.wrappedValue = MLXArray(...)
-  
+
   // For private computed parameters:
   self._routerInputScale = MLXArray(...)
   ```
@@ -582,43 +582,28 @@ The last step before we can use the model is to register the types so that every
 Since this is an LLM (as opposed to a VLM), we register the type that will show in the configuration file in the `LLMTypeRegistry`:
 
 ```swift
-public class LLMTypeRegistry: ModelTypeRegistry, @unchecked Sendable {
-
-    private static func all() -> [String: @Sendable (URL) throws -> any LanguageModel] {
-    [
-        ...
+public enum LLMTypeRegistry {
+    public static let shared: ModelTypeRegistry = .init(creators: [
+        // ...
         "gemma": create(GemmaConfiguration.self, GemmaModel.init),
+    ])
+}
 ```
 
-Now we can load the model using `llm-tool` or the `LLMEval` example application, or implement this ourselves in code:
+Now you can load the model directly from your Swift code.
+
+This repository contains libraries only (no CLI targets). For runnable examples, see `ml-explore/mlx-swift-examples`.
 
 ```swift
-let modelConfiguration = ModelConfiguration(id: "mlx-community/quantized-gemma-2b-it")
+import MLXLLM
+import MLXLMCommon
 
-// This will download the weights from Hugging Face Hub and load the model
-let container = try await MLXModelFactory.shared.loadContainer(configuration: modelConfiguration)
+let container = try await LLMModelFactory.shared.loadContainer(
+    configuration: .init(id: "mlx-community/quantized-gemma-2b-it")
+)
 
-// Prepare the prompt and parameters used to generate the response
-let generateParameters = GenerateParameters()
-let input = UserInput(prompt: "Are cherries sweet?")
-
-// Run inference
-let result = try await modelContainer.perform { [input] context in
-    // Convert the UserInput into LMInput
-    let input = try context.processor.prepare(input: input)
-
-    return generate(input: input, parameters: generateParameters, context: context) { tokens in
-        // This could potentially use NaiveStreamingDetokenizer and print
-        // text as it was generated
-        if tokens.count >= 20 {
-            return .stop
-        } else {
-            return .more
-        }
-    }
-}
-
-print(result.output)
+let session = ChatSession(container)
+print(try await session.respond(to: "Are cherries sweet?"))
 ```
 
 ## Notes

@@ -103,17 +103,19 @@ let response = try await session.respond(
 ### Embeddings
 
 ```swift
-import Embedders
+import MLX
+import MLXEmbedders
 
-let container = try await loadModelContainer(
-    configuration: ModelConfiguration(id: "mlx-community/bge-small-en-v1.5-mlx")
-)
+// Pick a pre-registered embedder configuration.
+let container = try await loadModelContainer(configuration: .bge_small)
 
-let embeddings = await container.perform { model, tokenizer, pooler in
-    let tokens = tokenizer.encode(text: "Hello world")
+let embeddings = await container.perform { model, tokenizer, pooling in
+    let tokens = tokenizer.encode(text: "Hello world", addSpecialTokens: true)
     let input = MLXArray(tokens).expandedDimensions(axis: 0)
     let output = model(input)
-    let pooled = pooler(output, normalize: true)
+
+    // Pool + (optionally) L2-normalize the sentence embedding.
+    let pooled = pooling(output, normalize: true)
     eval(pooled)
     return pooled
 }

@@ -1,26 +1,24 @@
-#  Adding a Model
+# Adding an LLM
 
-If the model follows the typical LLM pattern you can add a new
-model in a few steps.
+If a model follows the typical LLM layout (Hugging Face / MLX):
 
-- `config.json`, `tokenizer.json`, and `tokenizer_config.json`
-- `*.safetensors`
+- `config.json`, `tokenizer.json`, `tokenizer_config.json`
+- one or more `*.safetensors` shards
 
-You can follow the pattern of the models in the [Models](Models) directory
-and create a `.swift` file for your new model:
+…you can usually add it by following the patterns in `Models/`.
 
-## Create a Configuration
+## 1) Create a configuration type
 
-Create a configuration struct to match the `config.json` (any parameters needed).
+Create a configuration struct that matches the fields you need from `config.json`:
 
 ```swift
 public struct YourModelConfiguration: Codable, Sendable {
     public let hiddenSize: Int
-    
+
     // use this pattern for values that need defaults
     public let _layerNormEps: Float?
     public var layerNormEps: Float { _layerNormEps ?? 1e-6 }
-    
+
     enum CodingKeys: String, CodingKey {
         case hiddenSize = "hidden_size"
         case _layerNormEps = "layer_norm_eps"
@@ -28,67 +26,47 @@ public struct YourModelConfiguration: Codable, Sendable {
 }
 ```
 
-## Create the Model Class
+## 2) Implement the model
 
-Create the model class. The top-level public class should have a
-structure something like this:
+The public model type must conform to `LanguageModel` (and typically `LLMModel` + `KVCacheDimensionProvider`).
 
 ```swift
-public class YourModel: Module, LLMModel, KVCacheDimensionProvider, LoRAModel {
+import MLX
+import MLXLMCommon
+import MLXNN
 
+public final class YourModel: Module, LLMModel, KVCacheDimensionProvider {
     public let kvHeads: [Int]
 
-    @ModuleInfo var model: YourModelInner
+    @ModuleInfo var inner: YourModelInner
 
-    public func loraLinearLayers() -> LoRALinearLayers {
-        // TODO: modify as needed
-        model.layers.map { ($0.attention, ["q_proj", "v_proj"]) }
+    public init(_ config: YourModelConfiguration) {
+        self.kvHeads = Array(repeating: /* kvHeads */, count: /* num layers */)
+        self.inner = YourModelInner(config)
     }
 
-    public init(_ args: YourModelConfiguration) {
-        self.kvHeads = Array(repeating: args.kvHeads, count: args.hiddenLayers)
-        self.model = YourModelInner(args)
+    public func callAsFunction(_ inputs: MLXArray, cache: [KVCache]?) -> LMOutput {
+        // return LMOutput(logits: ...)
+        fatalError("implement")
     }
 
-    public func callAsFunction(_ inputs: MLXArray, cache: [KVCache]?) -> MLXArray {
-        // TODO: modify as needed
-        let out = model(inputs, cache: cache)
-        return model.embedTokens.asLinear(out)
+    public var loraLayers: [Module] {
+        // return the transformer blocks you want adapters applied to
+        []
     }
 }
 ```
 
-## Register the Model
+## 3) Register the `model_type`
 
-In [LLMModelFactory.swift](LLMModelFactory.swift) register the model type itself
-(this is independent of the model id):
+Add the mapping from `config.json` `model_type` → Swift constructor by editing the
+`creators:` dictionary passed to `LLMTypeRegistry.shared` in `LLMModelFactory.swift`.
 
-```swift
-public class ModelTypeRegistry: @unchecked Sendable {
-...
-    private var creators: [String: @Sendable (URL) throws -> any LanguageModel] = [
-        "yourModel": create(YourModelConfiguration.self, YourModel.init),
-```
+## 4) (Optional) Add an `LLMRegistry` entry
 
-Add a constant for the model in the `ModelRegistry` (not strictly required but useful
-for callers to refer to it in code):
+If you need per-model overrides (prompt defaults, tokenizer overrides, etc.), add a
+`ModelConfiguration` to `LLMRegistry` and include it in its `all()` list.
 
-```swift
-public class ModelRegistry: @unchecked Sendable {
-...
-    static public let yourModel_4bit = ModelConfiguration(
-        id: "mlx-community/YourModel-4bit",
-        defaultPrompt: "What is the gravity on Mars and the moon?"
-    )
-```
+## See also
 
-and finally add it to the all list -- this will let users find the model
-configuration by id:
-
-```swift
-    private static func all() -> [ModelConfiguration] {
-        [
-            codeLlama13b4bit,
-...
-            yourModel_4bit,
-```
+- `MLXLMCommon/Documentation.docc/porting.md` (porting workflow + debugging tips)

@@ -1,153 +1,77 @@
-#  Using a Model
+# Using a model
 
-Using a model is easy:  load the weights, tokenize and evaluate.
+`ChatSession` (see <doc:evaluation>) is the recommended entry point for most apps.
+This article describes the lower-level APIs for callers that want tighter control over generation.
 
-There is a high level API described in <doc:evaluation> and this documentation
-describes the lower level API if you need more control.
+## Loading a model
 
-## Loading a Model
-
-A model is typically loaded by using a `ModelFactory` and a `ModelConfiguration`:
+LLMs are typically loaded via `LLMModelFactory`:
 
 ```swift
-// e.g. LLMModelFactory.shared
-let modelFactory: ModelFactory
+import MLXLLM
+import MLXLMCommon
 
-// e.g. LLMRegistry.llama3_8B_4bit
-let modelConfiguration: ModelConfiguration
-
-let container = try await modelFactory.loadContainer(configuration: modelConfiguration)
+let container = try await LLMModelFactory.shared.loadContainer(
+    configuration: .init(id: "mlx-community/Qwen3-4B-4bit")
+)
 ```
 
-The `container` provides an isolation context (an `actor`) to run inference in the model.
+`ModelContainer` is an actor that provides isolation for the underlying `ModelContext`.
 
-Predefined `ModelConfiguration` instances are provided as static variables
-on the `ModelRegistry` types or they can be created:
+## Preparing inputs
+
+You typically start from `UserInput` and convert it to an `LMInput` using the model’s processor:
 
 ```swift
-let modelConfiguration = ModelConfiguration(id: "mlx-community/llama3_8B_4bit")
+import MLXLMCommon
+
+let userInput = UserInput(prompt: "Hello")
+let lmInput = try await container.prepare(input: userInput)
 ```
 
-The flow inside the `ModelFactory` goes like this:
+For VLMs, include images/videos in `UserInput` (or use `ChatSession.respond(...)` convenience overloads).
+
+## Generating output (stream)
+
+`ModelContainer.generate(...)` returns an `AsyncStream<Generation>` that includes text chunks and tool calls:
 
 ```swift
-public class LLMModelFactory: ModelFactory {
+import MLXLMCommon
 
-    public func _load(
-        hub: HubApi, configuration: ModelConfiguration,
-        progressHandler: @Sendable @escaping (Progress) -> Void
-    ) async throws -> ModelContext {
-        // download the weight and config using HubApi
-        // load the base configuration
-        // using the typeRegistry create a model (random weights)
-        // load the weights, apply quantization as needed, update the model
-            // calls model.sanitize() for weight preparation
-        // load the tokenizer
-        // (vlm) load the processor configuration, create the processor
+let stream = try await container.generate(
+    input: lmInput,
+    parameters: GenerateParameters(maxTokens: 256)
+)
+
+for await generation in stream {
+    switch generation {
+    case .chunk(let text):
+        print(text, terminator: "")
+    case .toolCall(let call):
+        print("\nTool call: \(call.function.name)")
+    case .info:
+        break
     }
 }
+print()
 ```
 
-Callers with specialized requirements can use these individual components to manually
-load models, if needed.
+## Wired memory (optional)
 
-## Evaluation Flow
-
-- Load the Model
-- UserInput
-- LMInput
-- generate()
-    - NaiveStreamingDetokenizer
-    - TokenIterator
-
-## Evaluating a Model
-
-Once a model is loaded you can evaluate a prompt or series of
-messages. Minimally you need to prepare the user input:
+You can pass a `WiredMemoryTicket` to coordinate a single global wired limit across concurrent inference tasks:
 
 ```swift
-let prompt = "Describe the image in English"
-var input = UserInput(prompt: prompt, images: image.map { .url($0) })
-input.processing.resize = .init(width: 256, height: 256)
-```
+import MLX
+import MLXLMCommon
 
-This example shows adding some images and processing instructions -- if
-model accepts text only then these parts can be omitted. The inference
-calls are the same.
-
-Assuming you are using a `ModelContainer` (an actor that holds
-a `ModelContext`, which is the bundled set of types that implement a
-model), the first step is to convert the `UserInput` into the
-`LMInput` (LanguageModel Input):
-
-```swift
-let generateParameters: GenerateParameters
-let input: UserInput
-
-let result = try await modelContainer.perform { [input] context in
-    let input = try context.processor.prepare(input: input)
-
-```
-
-Given that `input` we can call `generate()` to produce a stream
-of tokens. In this example we use a `NaiveStreamingDetokenizer`
-to assist in converting a stream of tokens into text and print it.
-The stream is stopped after we hit a maximum number of tokens:
-
-```
-    var detokenizer = NaiveStreamingDetokenizer(tokenizer: context.tokenizer)
-
-    return try MLXLMCommon.generate(
-        input: input, parameters: generateParameters, context: context
-    ) { tokens in
-
-        if let last = tokens.last {
-            detokenizer.append(token: last)
-        }
-
-        if let new = detokenizer.next() {
-            print(new, terminator: "")
-            fflush(stdout)
-        }
-
-        if tokens.count >= maxTokens {
-            return .stop
-        } else {
-            return .more
-        }
-    }
-}
-```
-
-### Wired Memory (Optional)
-
-Use the policy-based API to coordinate a single global wired limit across tasks.
-`WiredMemoryManager` and `WiredMemoryTicket` are provided by MLX, while
-MLXLMCommon adds LLM-oriented policies (like `WiredFixedPolicy` or capped sum).
-Policy-only admission is enabled by default on unsupported backends so the same
-ticket logic applies on CPU (no OS limit changes are attempted).
-
-```swift
 let policy = WiredSumPolicy()
 let ticket = policy.ticket(size: estimatedBytes)
 
-let stream = try MLXLMCommon.generate(
-    input: input,
-    parameters: generateParameters,
-    context: context,
+let stream = try await container.generate(
+    input: lmInput,
+    parameters: .init(),
     wiredMemoryTicket: ticket
 )
 ```
 
-Policies are pure and compute a single limit for all active tickets. Built-in
-policies include `WiredSumPolicy`, `WiredMaxPolicy`, and `WiredFixedPolicy`.
-Use `WiredMemoryTicket.withWiredLimit` for cancellation-safe start/end pairing.
-
-Policies can also gate concurrency by implementing `canAdmit`. When admission is
-denied, `start()` suspends until capacity is available. For debugging, the
-`WiredMemoryManager.events()` stream emits changes in DEBUG builds and is a no-op
-in release builds.
-
-If you want to account for long-lived model weights without keeping the wired
-limit elevated while idle, create tickets with `kind: .reservation` so they
-participate in admission and limit calculation only when active tickets exist.
+For runtime sizing, see `MLXLMCommon/Documentation.docc/wired-memory.md`.

@@ -1,49 +1,49 @@
-#  MLXEmbedders
+# MLXEmbedders
 
-This directory contains ports of popular Encoders / Embedding Models. 
+Ports of popular encoder / embedding models.
 
-## Usage Example
+This module provides:
+
+- `ModelConfiguration` (embedding-specific)
+- `loadModelContainer(configuration: ...)` → `ModelContainer`
+- `EmbeddingModel` implementations + pooling helpers
+
+## Usage example
 
 ```swift
-    let modelContainer = try await loadModelContainer(configuration: .nomic_text_v1_5)
-    let searchInputs = [
-        "search_query: Animals in Tropical Climates.",
-        "search_document: Elephants",
-        "search_document: Horses",
-        "search_document: Polar Bears",
-    ]
+import MLX
+import MLXEmbedders
 
-    // Generate embeddings
-    let resultEmbeddings = await modelContainer.perform {
-        (model: EmbeddingModel, tokenizer: Tokenizer, pooling: Pooling) -> [[Float]] in
-        let inputs = searchInputs.map {
-            tokenizer.encode(text: $0, addSpecialTokens: true)
-        }
-        // Pad to longest
-        let maxLength = inputs.reduce(into: 16) { acc, elem in
-            acc = max(acc, elem.count)
-        }
+let container = try await loadModelContainer(configuration: .nomic_text_v1_5)
 
-        let padded = stacked(
-            inputs.map { elem in
-                MLXArray(
-                    elem
-                        + Array(
-                            repeating: tokenizer.eosTokenId ?? 0,
-                            count: maxLength - elem.count))
-            })
-        let mask = (padded .!= tokenizer.eosTokenId ?? 0)
-        let tokenTypes = MLXArray.zeros(like: padded)
-        let result = pooling(
-            model(padded, positionIds: nil, tokenTypeIds: tokenTypes, attentionMask: mask),
-            normalize: true, applyLayerNorm: true
-        )
-        result.eval()
-        return result.map { $0.asArray(Float.self) }
-    }
+let inputs = [
+    "search_query: Animals in tropical climates.",
+    "search_document: Elephants",
+    "search_document: Polar bears",
+]
+
+let embeddings: [[Float]] = await container.perform { model, tokenizer, pooling in
+    let tokens = inputs.map { tokenizer.encode(text: $0, addSpecialTokens: true) }
+    let maxLength = tokens.map(\.count).max() ?? 0
+    let eos = tokenizer.eosTokenId ?? 0
+
+    let padded = stacked(tokens.map { MLXArray($0 + Array(repeating: eos, count: maxLength - $0.count)) })
+    let mask = (padded .!= eos)
+    let tokenTypes = MLXArray.zeros(like: padded)
+
+    let pooled = pooling(
+        model(padded, positionIds: nil, tokenTypeIds: tokenTypes, attentionMask: mask),
+        normalize: true,
+        applyLayerNorm: true
+    )
+
+    eval(pooled)
+    return pooled.map { $0.asArray(Float.self) }
+}
+
+print("Embeddings:", embeddings.count)
 ```
 
+## Notes
 
-Ported to swift from [taylorai/mlx_embedding_models](https://github.com/taylorai/mlx_embedding_models/tree/main)[^1]
-
-[^1]: Modified by [CodebyCR](https://github.com/CodebyCR) to match test case.
+This codebase started as a Swift port of models from `taylorai/mlx_embedding_models`.
